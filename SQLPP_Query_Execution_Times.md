@@ -3,6 +3,8 @@
 Source workbook: `Benchmark_Execution_Times.xlsx`  
 All execution times are in seconds unless noted otherwise.
 
+Related shapefile external dataset pushdown notes: `ShapefileTests.md`.
+
 ## Q1: Load Dataset from `localfs`
 
 ```sql
