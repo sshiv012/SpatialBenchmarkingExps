@@ -37,7 +37,7 @@ CREATE INDEX geom_idx ON <dataset>(geometryAttribute) TYPE RTREE;
 | Buildings | 16.77 | 294.48 | 476.12 |
 | All Nodes | 844.87 | 6741.93 | 9286.38 |
 
-## Q3: Spatial Join (Default)
+## Q3: Spatial Join (Default PBSM, 100x100 Grid)
 
 ```sql
 SELECT COUNT(*)
@@ -48,11 +48,12 @@ WHERE st_contains(b.g, a.g);
 | Configuration | USA | Western Hemisphere | Whole World |
 |---|---:|---:|---:|
 | PBSM default 100x100 grid (JTS) | 3934.07 | 21793.66 | 35896.05 |
+Note will update this after increasing parallelism conf. Once again.
 
+## Spatial Join in Sedona, 12 Nodes
 ### Sedona 12-Node Execution Details
 
 Source files:
-
 - `SedonaJoinTestAPR2026.scala`
 - `../query_log_show_collect_apr_17_26.txt`
 
@@ -80,7 +81,6 @@ Spark runtime configuration from the log:
 | Cores per node | 12 |
 | Total executor cores / task slots | 144 |
 | RAM per node | 64 GB |
-| Total cluster RAM | 768 GB |
 | Spark executor cores | 4 |
 | Spark executor memory | 16g |
 | Spark driver memory | 16g |
@@ -89,17 +89,15 @@ Spark runtime configuration from the log:
 | Theoretical one-core executors if split 1 core each | 144 |
 | Physical RAM per one-core executor slot | 5.33 GB |
 
-With `spark.executor.cores=4`, the 144 available executor cores correspond to about 36 executor JVMs across the 12 worker nodes, or about 3 executor JVMs per node. Each executor JVM was configured with `16g`, which is about `4 GB` of configured executor memory per executor core. The full cluster has `64 GB x 12 = 768 GB` total RAM; if that RAM is viewed as evenly split across 144 one-core executor slots, the cluster provides about `5.33 GB` of physical RAM per slot.
-
-Execution time from `query_log_show_collect_apr_17_26.txt`:
+Execution time:
 
 | Action | Time (seconds) | Time (minutes) | Spark job IDs |
 |---|---:|---:|---|
-| `show(truncate = false)` | 1686.828751 | 28.114 | `4,5,6,7` |
-| `collect()` | 3011.003808 | 50.183 | `8,9,10,11` |
-| Total action time | 4697.832559 | 78.297 | `4,5,6,7,8,9,10,11` |
+| `show(truncate = false)` | 1686.83 | 28.11 | `4,5,6,7` |
+| `collect()` | 3011.00 | 50.18 | `8,9,10,11` |
+| Total action time | 4697.83 | 78.30 | `4,5,6,7,8,9,10,11` |
 
-Total action time is approximately `1.305 hours`.
+Total action time is approximately `1.31 hours`.
 
 | Metric | Value |
 |---|---:|
@@ -123,7 +121,7 @@ WHERE /*+ spatial-partitioning(-180.0, -89.0, 180.0, 90.0, 1200000, 1200000) */
 
 | Configuration | USA | Western Hemisphere | Whole World |
 |---|---:|---:|---:|
-| PBSM optimized 1.2M x 1.2M grid (JTS) | 503.05 | 2305.07 | 2707.78 |
+| PBSM optimized 1.2M x 1.2M grid (JTS) | tbf | tbf | 1102.95 |
 
 ### Optimization History
 
@@ -156,7 +154,7 @@ Sort accounts for about 30% of CPU when run generation and run merge are combine
 
 ### Best Recorded Optimized Run
 
-Best recorded Q4 time: `1102.946830459 s` execution time (`1102.951581072 s` elapsed time). The run used `96` compiler parallelism, `2GB` join memory, `128MB` sort memory, and a JVM heap of `32GB` per worker.
+Best recorded Q4 time: `1102.95 s` execution time (`1102.95 s` elapsed time). The run used `96` compiler parallelism, `2GB` join memory, `128MB` sort memory, and a JVM heap of `32GB` per worker.
 
 ```bash
 curl -sS http://localhost:19002/query/service \
@@ -172,9 +170,9 @@ curl -sS http://localhost:19002/query/service \
 | `compiler.sortmemory` | 128MB |
 | Worker JVM heap | 32GB per worker |
 | Query result | 12,210,542 |
-| Elapsed time | 1102.951581072 s |
-| Execution time | 1102.946830459 s |
-| Compile time | 46.263695 ms |
+| Elapsed time | 1102.95 s |
+| Execution time | 1102.95 s |
+| Compile time | 46.26 ms |
 | Queue wait time | 1 ms |
 | Processed objects | 2,795,608,586 |
 | Buffer cache hit ratio | 0.00% |
@@ -188,11 +186,11 @@ Using Sedona `show()` as the first-action baseline:
 
 | System / Run | Comparable Time | Notes |
 |---|---:|---|
-| Sedona, `show(truncate = false)` | 1686.828751 s | First Spark action from the log |
-| AsterixDB, best Q4 optimized run | 1102.946830459 s | `compiler.parallelism=96`, `compiler.joinmemory=2GB`, `compiler.sortmemory=128MB`, 32GB JVM heap per worker |
+| Sedona, `show(truncate = false)` | 1686.83 s | First Spark action from the log |
+| AsterixDB, best Q4 optimized run | 1102.95 s | `compiler.parallelism=96`, `compiler.joinmemory=2GB`, `compiler.sortmemory=128MB`, 32GB JVM heap per worker |
 | Speedup | 1.53x | AsterixDB best optimized run is about 1.53x faster than Sedona's first action |
 
-The later Sedona `collect()` action took `3011.003808 s`, but it repeats the query and should not be added to `show()` for the primary benchmark. Adding `show + collect` gives `4697.832559 s` and would overstate the comparison because it counts two separate Spark actions.
+The later Sedona `collect()` action took `3011.00 s`, but it repeats the query and should not be added to `show()` for the primary benchmark. Adding `show + collect` gives `4697.83 s` and would overstate the comparison because it counts two separate Spark actions.
 
 ## Q5: Force Nested Loop Join in AsterixDB
 
@@ -223,6 +221,8 @@ WHERE /*+ spatial-partitioning(-180.0, -89.0, 180.0, 90.0, x, x) */
 | 2400109.0 | 3205.26 |  |
 | 4800113.0 | 10000.00 | Performance degrades |
 
+Note: Can increase parallelism for these and re-run
+
 ## Q7: Spatial Filtering (Region Polygon) + Spatial Join
 
 ```sql
@@ -234,7 +234,7 @@ WHERE ST_Contains(ST_GeomFromGeoJSON(<region_polygon>), b.g)
 
 | Filter Region | USA Broadcast | USA Indexed | Western Hemisphere Broadcast | Western Hemisphere Indexed | Whole World Broadcast | Whole World Indexed |
 |---|---:|---:|---:|---:|---:|---:|
-| Riverside (159 records) | 223.11 | 0.87 | 818.95 | 0.861 | 972.90 | 0.916 |
+| Riverside (159 records) | 223.11 | 0.87 | 818.95 | 0.86 | 972.90 | 0.92 |
 | LA County (49,175 records) | 231.05 | 175.80 | 823.34 | 176.57 | 996.70 | 212.30 |
 | California (389,531 records) | 285.80 | 1530.46 | 865.10 | 1425.00 | 1029.53 | 1719.97 |
 
@@ -246,16 +246,16 @@ FROM nodes_dataset_clean n
 WHERE ST_Intersects(n.g, ST_Make_Envelope(xmin, ymin, xmax, ymax, 4326));
 ```
 
-| Region | Records | Selectivity | Indexed Time |
+| Region | Records | Selectivity (%) | Indexed Time |
 |---|---:|---:|---:|
-| SF (0.02 deg) | 938 | 0.0000094425 | 1.212 |
-| SF (0.04 deg) | 3833 | 0.0000385853 | 0.05768 |
-| Bay Area | 67353 | 0.0006780168 | 1.42 |
-| NorCal | 281798 | 0.0028367523 | 4.00 |
-| West USA | 3040377 | 0.0306063079 | 22.00 |
-| Western Hemisphere | 31819657 | 0.3203162693 | 24.40 |
-| Eastern Hemisphere | 67518605 | 0.6796838716 | 55.579 |
-| World | 99338248 | 1.0000000000 | 95.35 |
+| SF (0.02 deg) | 938 | <0.01 | 1.21 |
+| SF (0.04 deg) | 3833 | <0.01 | 0.06 |
+| Bay Area | 67353 | 0.07 | 1.42 |
+| NorCal | 281798 | 0.28 | 4.00 |
+| West USA | 3040377 | 3.06 | 22.00 |
+| Western Hemisphere | 31819657 | 32.03 | 24.40 |
+| Eastern Hemisphere | 67518605 | 67.97 | 55.58 |
+| World | 99338248 | 100.00 | 95.35 |
 
 ## Q9: Force Full Scan
 
@@ -266,16 +266,16 @@ WHERE /*+ skip-index */
       ST_Intersects(n.g, ST_Make_Envelope(xmin, ymin, xmax, ymax, 4326));
 ```
 
-| Region | Records | Selectivity | Scan Time |
+| Region | Records | Selectivity (%) | Scan Time |
 |---|---:|---:|---:|
-| SF (0.02 deg) | 938 | 0.0000094425 | 43.99 |
-| SF (0.04 deg) | 3833 | 0.0000385853 | 27.64 |
-| Bay Area | 67353 | 0.0006780168 | 26.90 |
-| NorCal | 281798 | 0.0028367523 | 23.79 |
-| West USA | 3040377 | 0.0306063079 | 25.027 |
-| Western Hemisphere | 31819657 | 0.3203162693 | 30.00 |
-| Eastern Hemisphere | 67518605 | 0.6796838716 | 25.04 |
-| World | 99338248 | 1.0000000000 | 28.90 |
+| SF (0.02 deg) | 938 | <0.01 | 43.99 |
+| SF (0.04 deg) | 3833 | <0.01 | 27.64 |
+| Bay Area | 67353 | 0.07 | 26.90 |
+| NorCal | 281798 | 0.28 | 23.79 |
+| West USA | 3040377 | 3.06 | 25.03 |
+| Western Hemisphere | 31819657 | 32.03 | 30.00 |
+| Eastern Hemisphere | 67518605 | 67.97 | 25.04 |
+| World | 99338248 | 100.00 | 28.90 |
 
 ## Q10: Circular Range Query (Golden Gate Bridge, r = 0.1)
 
@@ -285,17 +285,10 @@ FROM <dataset>
 WHERE ST_Distance(ST_Point(-122.4783, 37.8199), g) < 0.1;
 ```
 
-| Dataset / Benchmark | 4 Nodes | 8 Nodes | 12 Nodes |
-|---|---:|---:|---:|
-| All Nodes, Golden Gate | 495.23 | 258.75 | 138.48 |
-| Buildings, Golden Gate | 14.93 | 9.91 | 4.39 |
-
-Additional 12-node comparison:
-
-| Query | Sedona | AsterixDB | AsterixDB Extended |
-|---|---:|---:|---:|
-| Range, no index, Buildings near Golden Gate | 45.73 | 65.73 | 405.37 |
-| Range, no index, All Nodes near Golden Gate | 302.59 | 606.61 | 3278.81 |
+| Query | Sedona | AsterixDB |
+|---|---:|---:|
+| Range, no index, Buildings near Golden Gate | 45.73 | 65.73 | 
+| Range, no index, All Nodes near Golden Gate | 302.59 | 606.61 |
 
 ## Q11: Spatial Aggregation (Average Building Area)
 
@@ -304,16 +297,10 @@ SELECT AVG(st_area(b.g)) AS average_builiding_area
 FROM buildings_dataset b;
 ```
 
-| Benchmark | Time |
+| System | Execution Time |
 |---|---:|
-| AsterixDB, 12 nodes, USA scale-out | 3.71 |
-
-Additional 12-node comparison:
-
-| System | USA Time | Whole World / Extended Time |
-|---|---:|---:|
-| Sedona | 44.20 |  |
-| AsterixDB | 45.82 | 369.59 |
+| Sedona | 44.20 | 
+| AsterixDB | 45.82 |
 
 ## Q12: Spatial Aggregation (Minimum X)
 
@@ -321,18 +308,26 @@ Additional 12-node comparison:
 SELECT MIN(st_x(a.g)) AS min_x
 FROM all_nodes_dataset a;
 ```
-
-| Benchmark | Time |
+| System | Execution Time |
 |---|---:|
-| AsterixDB, 12 nodes, USA scale-out | 120.61 |
+| Sedona | 293.83 | 
+| AsterixDB | 534.60 |
 
-Additional 12-node comparison:
+## Horizontal Scale-Out: USA Subset
 
-| System | USA Time | Whole World / Extended Time |
-|---|---:|---:|
-| Sedona | 293.83 |  |
-| AsterixDB | 534.60 | 3138.39 |
+| Operation | 4 Nodes | 8 Nodes | 12 Nodes | Speedup 4 -> 12 |
+|---|---:|---:|---:|---:|
+| Data Loading - All Nodes | 4,150.64 | 2,434.83 | 1,286.88 | 3.2x |
+| Data Loading - Buildings | 117.20 | 74.75 | 41.40 | 2.8x |
+| Spatial Join - PBSM | 2,117.88 | 1,033.29 | 503.05 | 4.2x |
+| Range All Nodes (Golden Gate) | 495.23 | 258.75 | 138.48 | 3.6x |
+| Range Buildings (Golden Gate) | 14.93 | 9.91 | 4.39 | 3.4x |
+| Spatial Agg - Avg Building | 8.93 | 4.40 | 3.71 | 2.4x |
+| Spatial Agg - Min X All Nodes | 370.94 | 196.87 | 120.61 | 3.1x |
+| Index Creation - All Nodes | 2,872.60 | 1,382.94 | 844.67 | 3.4x |
+| Index Creation - Buildings | 42.23 | 20.69 | 16.87 | 2.5x |
 
+# Real-World Analytical Use Cases
 ## Q13: CA-Wide Containment Join (Buildings Join Nodes) with BBox Filters
 
 ```sql
@@ -346,7 +341,7 @@ AND ST_Intersects(cn.g, st_make_envelope(-124.48, 32.53, -114.13, 42.01, 4326));
 
 | System / Index Configuration | Time |
 |---|---:|
-| Sedona | 147.249 |
+| Sedona | 147.25 |
 | AsterixDB Full Index | 27.02 |
 | AsterixDB No Index | 108.45 |
 
@@ -389,10 +384,10 @@ LIMIT 10;
 
 | System / Index Configuration | Time |
 |---|---:|
-| Sedona | 92.056 |
-| AsterixDB Full Index | 0.211 |
+| Sedona | 92.06 |
+| AsterixDB All Index | 0.21 |
 | AsterixDB BTree Only | 16.80 |
-| AsterixDB RTree Only | 0.303 |
+| AsterixDB RTree Only | 0.30 |
 | AsterixDB No Index | 76.67 |
 
 ## Q16: Dual-Filter Containment Join (Schools Contain Schools) in CA Window
@@ -408,8 +403,24 @@ AND ST_Intersects(cb.g, st_make_envelope(-124.48, 32.53, -114.13, 42.01, 4326));
 
 | System / Index Configuration | Time |
 |---|---:|
-| Sedona | 162.902 |
+| Sedona | 162.90 |
 | AsterixDB Full Index | 1.60 |
 | AsterixDB BTree Only | 10.28 |
 | AsterixDB RTree Only | 3.30 |
 | AsterixDB No Index | 65.80 |
+
+## OGC (JTS) vs Legacy Geometry in AsterixDB
+
+### SF Window Range Query (`ST_Intersects`)
+
+| Geometry | Indexed Time | No Index Time | Index Speedup |
+|---|---:|---:|---:|
+| OGC (JTS) | 1.21 | 43.99 | 36.30x |
+| Legacy | 21.20 | 225.54 | 10.60x |
+
+### Aggregation Queries (Scan-Based)
+
+| Query | OGC Time | Legacy Time | Notes |
+|---|---:|---:|---|
+| MAX Area Aggregation | 71.78 | 57.75 | Legacy faster because geometry representation is simpler |
+| MIN X Aggregation | 31.78 | 21.26 | Legacy faster because geometry representation is simpler |
